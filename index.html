@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tiny Shanzai Rogue</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #111; color: #f5f5f5;
+      font-family: system-ui, sans-serif;
+    }
+    body {
+      display: flex;
+      background:
+        linear-gradient(#191919 1px, transparent 1px) 0 0/100% 32px,
+        linear-gradient(90deg,#191919 1px,transparent 1px)0 0/32px 100%,
+        #050505;
+    }
+    #app {
+      display:grid; grid-template-columns:2.2fr 1fr;
+      width:100%; height:100vh;
+      border:8px solid #f5f5f5; box-shadow:0 0 80px #000;
+    }
+    #left-pane {
+      position:relative; display:flex; align-items:center; justify-content:center;
+      background:#050505; border-right:4px solid #f5f5f5;
+    }
+    #banner {
+      position:absolute; left:16px; top:16px; bottom:16px; width:40px;
+      background:#d50000; border:3px solid #f5f5f5;
+      writing-mode:vertical-rl; text-orientation:mixed;
+      font-size:18px; letter-spacing:0.2em; font-weight:700;
+      color:#f5f5f5;
+      display:flex; align-items:center; justify-content:center;
+    }
+    #gameCanvas {
+      background:#000; image-rendering:pixelated;
+      width:100%; height:100%; max-width:960px; max-height:540px;
+      border:4px solid #f5f5f5;
+      box-shadow:inset 0 0 0 2px #000;
+    }
+    #right-pane {
+      display:grid; grid-template-rows:auto auto auto 1fr auto;
+      padding:16px; gap:10px; background:#111;
+    }
+    #title-line {
+      display:flex; align-items:baseline; gap:8px;
+      font-weight:800; text-transform:uppercase; letter-spacing:0.18em;
+      border-bottom:3px solid #f5f5f5; padding-bottom:4px;
+    }
+    #title-main { font-size:14px; }
+
+    #hp-section {
+      border:3px solid #f5f5f5; padding:6px 8px; background:#000;
+      display:grid; gap:4px;
+    }
+    #hp-label {
+      display:flex; justify-content:space-between;
+      font-size:11px; text-transform:uppercase; letter-spacing:0.16em;
+    }
+    #hp-bar-bg {
+      width:100%; height:14px; border:2px solid #f5f5f5; background:#111;
+      box-shadow:inset 0 0 0 2px #000;
+    }
+    #hp-bar-fill {
+      height:100%; width:100%;
+      background:#ff1744;
+      transform-origin:left center; transform:scaleX(1);
+      transition:transform .12s linear;
+    }
+
+    #stats-row { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    .stats-block { border:3px solid #f5f5f5; padding:4px 6px; background:#000; }
+    .stats-label { font-size:10px; color:#bdbdbd; text-transform:uppercase; letter-spacing:.12em; }
+    .stats-value { font-size:11px; }
+
+    #messages {
+      border:3px solid #f5f5f5; background:#000;
+      padding:6px 8px; font-size:11px; overflow-y:auto;
+      box-shadow:inset 0 0 0 2px #111;
+    }
+    .msg { padding:2px 0; border-bottom:1px solid #222; }
+    .msg:last-child { border-bottom:none; }
+
+    #help {
+      border-top:3px solid #f5f5f5;
+      padding-top:6px;
+      font-size:10px;
+      text-transform:uppercase;
+      letter-spacing:0.16em;
+      color:#bdbdbd;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="left-pane">
+    <div id="banner"><span>山寨地牢</span></div>
+    <canvas id="gameCanvas" width="640" height="360"></canvas>
+  </div>
+
+  <div id="right-pane">
+    <div id="title-line">
+      <div id="title-main">Tiny Shanzai Rogue</div>
+    </div>
+
+    <div id="hp-section">
+      <div id="hp-label"><span>health</span><span id="hp-text">-- / --</span></div>
+      <div id="hp-bar-bg"><div id="hp-bar-fill"></div></div>
+    </div>
+
+    <div id="stats-row">
+      <div class="stats-block">
+        <div class="stats-label">level</div>
+        <div class="stats-value" id="levelText">1</div>
+        <div class="stats-label">monsters</div>
+        <div class="stats-value" id="monsterCount">-</div>
+      </div>
+      <div class="stats-block">
+        <div class="stats-label">weapon</div>
+        <div class="stats-value" id="weaponText">none</div>
+        <div class="stats-label">fov</div>
+        <div class="stats-value">8</div>
+      </div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div id="help">
+      tiny shanzai rogue · arrows move · space waits
+    </div>
+  </div>
+</div>
+
+<script>
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d");
+
+  let latestState = null;
+  let explored = null;
+  let particles = [];
+  let lastTime = 0;
+
+  const FOV_RADIUS = 8;
+
+  // combat-triggered particles
+  let combatParticlesPending = false;
+  let lastCombatMessage = "";
+
+  async function fetchState() {
+    const res = await fetch("/state");
+    return await res.json();
+  }
+
+  async function sendCommand(command) {
+    const res = await fetch("/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command })
+    });
+    return await res.json();
+  }
+
+  function initExplored(rows, cols) {
+    explored = [];
+    for (let y = 0; y < rows; y++) {
+      explored.push(new Array(cols).fill(false));
+    }
+  }
+
+  function los(tiles, x0, y0, x1, y1) {
+    let dx = Math.abs(x1 - x0);
+    let sx = x0 < x1 ? 1 : -1;
+    let dy = -Math.abs(y1 - y0);
+    let sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    while (true) {
+      if (x0 === x1 && y0 === y1) return true;
+      const ch = tiles[y0]?.[x0];
+      if (ch === "#") return false;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+  }
+
+  function computeFOV(tiles, px, py, radius) {
+    const rows = tiles.length;
+    const cols = tiles[0].length;
+    const visible = [];
+    for (let y = 0; y < rows; y++) visible.push(new Array(cols).fill(false));
+    for (let y = py - radius; y <= py + radius; y++) {
+      for (let x = px - radius; x <= px + radius; x++) {
+        if (y < 0 || y >= rows || x < 0 || x >= cols) continue;
+        const dx = x - px, dy = y - py;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > radius) continue;
+        if (los(tiles, px, py, x, y)) visible[y][x] = true;
+      }
+    }
+    return visible;
+  }
+
+  function spawnCombatParticles(px, py) {
+    const count = 14;
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 40 + Math.random() * 60;
+      particles.push({
+        x: px,
+        y: py,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.25 + Math.random() * 0.25
+      });
+    }
+  }
+
+  function updateParticles(dt) {
+    const alive = [];
+    for (const p of particles) {
+      p.life -= dt;
+      if (p.life <= 0) continue;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 15 * dt;
+      alive.push(p);
+    }
+    particles = alive;
+  }
+
+  function drawParticles() {
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    for (const p of particles) {
+      const alpha = Math.max(0, Math.min(1, p.life * 3));
+      ctx.fillStyle = `rgba(200, 30, 40, ${alpha})`;
+      ctx.fillRect(Math.floor(p.x), Math.floor(p.y), 2, 2);
+    }
+    ctx.restore();
+  }
+
+  function drawDungeon(state, dt) {
+    if (!state) return;
+    const tiles = state.tiles;
+    const rows = tiles.length;
+    const cols = tiles[0].length;
+
+    if (!explored || explored.length !== rows || explored[0].length !== cols) {
+      initExplored(rows, cols);
+    }
+
+    const tileSize = Math.floor(Math.min(canvas.width / cols, canvas.height / rows));
+    const drawWidth = cols * tileSize;
+    const drawHeight = rows * tileSize;
+    const offsetX = (canvas.width - drawWidth) / 2;
+    const offsetY = (canvas.height - drawHeight) / 2;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const player = state.player;
+    const px = player.x;
+    const py = player.y;
+
+    const visible = computeFOV(tiles, px, py, FOV_RADIUS);
+
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const ch = tiles[y][x];
+        const sx = offsetX + x * tileSize;
+        const sy = offsetY + y * tileSize;
+        const isVisible = visible[y][x];
+        if (isVisible) explored[y][x] = true;
+        const seen = explored[y][x];
+
+        if (!seen && !isVisible) {
+          ctx.fillStyle = "#000000";
+          ctx.fillRect(sx, sy, tileSize, tileSize);
+          continue;
+        }
+
+        const dx = x - px;
+        const dy = y - py;
+        let dist = Math.sqrt(dx*dx + dy*dy);
+        let light = Math.max(0.1, 1 - dist / 8);
+        if (!isVisible) light *= 0.35;
+
+        if (ch === "#") {
+          const base = 26;
+          const c = base + light * 40;
+          const g = Math.floor(c);
+          ctx.fillStyle = `rgb(${g},${g},${g})`;
+          ctx.fillRect(sx, sy, tileSize, tileSize);
+          ctx.strokeStyle = "#111";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(sx+0.5, sy+0.5, tileSize-1, tileSize-1);
+        } else {
+          const base = 30;
+          const c = base + light * 60;
+          const g = Math.floor(c);
+          ctx.fillStyle = `rgb(${g},${g},${g})`;
+          ctx.fillRect(sx, sy, tileSize, tileSize);
+          ctx.strokeStyle = "#141414";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(sx+0.5, sy+0.5, tileSize-1, tileSize-1);
+        }
+      }
+    }
+
+    const items = state.items || [];
+    // stairs
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (!visible[y][x]) continue;
+        if (tiles[y][x] === ">") {
+          const sx = offsetX + x * tileSize;
+          const sy = offsetY + y * tileSize;
+          ctx.fillStyle = "#ff5252";
+          ctx.fillRect(sx + tileSize * 0.2, sy + tileSize * 0.2, tileSize * 0.6, tileSize * 0.6);
+        }
+      }
+    }
+    // items
+    for (const it of items) {
+      if (!visible[it.y]?.[it.x]) continue;
+      const sx = offsetX + it.x * tileSize + tileSize / 2;
+      const sy = offsetY + it.y * tileSize + tileSize / 2;
+      if (it.kind === "weapon") {
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(-Math.PI / 4);
+        ctx.fillStyle = "#f5f5f5";
+        ctx.fillRect(-tileSize*0.05, -tileSize*0.25, tileSize*0.1, tileSize*0.5);
+        ctx.fillStyle = "#c62828";
+        ctx.fillRect(0, -tileSize*0.15, tileSize*0.35, tileSize*0.3);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = "#c62828";
+        ctx.fillRect(sx - tileSize*0.2, sy - tileSize*0.2, tileSize*0.4, tileSize*0.4);
+      }
+    }
+
+    // monsters
+    for (const m of state.monsters) {
+      if (!visible[m.y]?.[m.x]) continue;
+      const sx = offsetX + m.x * tileSize + tileSize / 2;
+      const sy = offsetY + m.y * tileSize + tileSize / 2;
+      const r = tileSize * 0.32;
+
+      if (m.name === "Nezha") {
+        ctx.fillStyle = "#e53935";
+        ctx.fillRect(sx - r, sy - r, r*2, r*2);
+        ctx.strokeStyle = "#f5f5f5";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(sx - r*0.8, sy);
+        ctx.lineTo(sx + r*0.8, sy);
+        ctx.moveTo(sx, sy - r*0.8);
+        ctx.lineTo(sx, sy + r*0.8);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = "#b71c1c";
+        ctx.fillRect(sx - r, sy - r, r*2, r*2);
+      }
+    }
+
+    // player
+    const psx = offsetX + px * tileSize + tileSize / 2;
+    const psy = offsetY + py * tileSize + tileSize / 2;
+    const pr = tileSize * 0.36;
+    ctx.fillStyle = "#f5f5f5";
+    ctx.fillRect(psx - pr, psy - pr, pr*2, pr*2);
+    ctx.strokeStyle = "#d50000";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(psx - pr+0.5, psy - pr+0.5, pr*2-1, pr*2-1);
+
+    if (combatParticlesPending) {
+      spawnCombatParticles(psx, psy);
+      combatParticlesPending = false;
+    }
+
+    updateParticles(dt);
+    drawParticles();
+  }
+
+  function renderUI(state) {
+    latestState = state;
+
+    const maxHp = 10;
+    const hp = state.player.hp;
+    const ratio = Math.max(0, Math.min(1, hp / maxHp));
+    document.getElementById("hp-text").textContent = `${hp} / ${maxHp}`;
+    document.getElementById("hp-bar-fill").style.transform = `scaleX(${ratio})`;
+
+    document.getElementById("levelText").textContent = state.level ?? 1;
+    document.getElementById("monsterCount").textContent = (state.monsters || []).length;
+    if (state.weapon) {
+      document.getElementById("weaponText").textContent = `${state.weapon.name} +${state.weapon.power}`;
+    } else {
+      document.getElementById("weaponText").textContent = "none";
+    }
+
+    const msgDiv = document.getElementById("messages");
+    msgDiv.innerHTML = "";
+    let lastMsg = "";
+    for (const m of state.messages) {
+      const d = document.createElement("div");
+      d.className = "msg";
+      d.textContent = m;
+      lastMsg = m;
+      msgDiv.appendChild(d);
+    }
+    msgDiv.scrollTop = msgDiv.scrollHeight;
+
+    if (lastMsg && lastMsg !== lastCombatMessage && lastMsg.includes("hit")) {
+      combatParticlesPending = true;
+    }
+    lastCombatMessage = lastMsg;
+  }
+
+  async function init() {
+    const state = await fetchState();
+    renderUI(state);
+    requestAnimationFrame(loop);
+  }
+
+  async function handleCommand(cmd) {
+    const state = await sendCommand(cmd);
+    renderUI(state);
+  }
+
+  function loop(ts) {
+    if (!lastTime) lastTime = ts;
+    const dt = (ts - lastTime) / 1000;
+    lastTime = ts;
+    if (latestState) drawDungeon(latestState, dt);
+    requestAnimationFrame(loop);
+  }
+
+  document.addEventListener("keydown", (e) => {
+    let cmd = null;
+    if (e.key === "ArrowUp") cmd = "up";
+    else if (e.key === "ArrowDown") cmd = "down";
+    else if (e.key === "ArrowLeft") cmd = "left";
+    else if (e.key === "ArrowRight") cmd = "right";
+    else if (e.key === " ") { e.preventDefault(); cmd = "wait"; }
+    if (!cmd) return;
+    e.preventDefault();
+    handleCommand(cmd);
+  });
+
+  init();
+</script>
+</body>
+</html>
